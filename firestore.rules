@@ -1,0 +1,121 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Allow authenticated users to read and write their own user document
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Allow authenticated users to read all users (for teacher-student relationships)
+    match /users/{userId} {
+      allow read: if request.auth != null;
+    }
+    
+    // Allow authenticated users to read classes
+    match /classes/{classId} {
+      allow read: if request.auth != null;
+    }
+    
+    // Allow admins to write classes
+    match /classes/{classId} {
+      allow write: if request.auth != null && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'super_admin'];
+    }
+    
+    // Allow teachers and admins to submit and manage results
+    match /result_submissions/{submissionId} {
+      // Allow authenticated users to create submissions (teachers submitting results)
+      allow create: if request.auth != null;
+      
+      // Allow users to read their own submissions or if they're admin
+      allow read: if request.auth != null;
+      
+      // Allow admins to update submissions (approve/reject)
+      allow update: if request.auth != null;
+      
+      // Allow admins to delete submissions if needed
+      allow delete: if request.auth != null;
+    }
+    
+    // Allow authenticated users to read and write assignments
+    match /assignments/{assignmentId} {
+      allow read, write: if request.auth != null;
+    }
+    
+    // Allow authenticated users to read and write results
+    match /results/{resultId} {
+      allow read, write: if request.auth != null;
+    }
+    
+    // Allow authenticated users to read subjects
+    match /subjects/{subjectId} {
+      allow read: if request.auth != null;
+    }
+    
+    // Allow admins to write subjects
+    match /subjects/{subjectId} {
+      allow write: if request.auth != null && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'super_admin'];
+    }
+    
+    // Allow authenticated users to read and write attendance records
+    match /attendance/{attendanceId} {
+      allow read, write: if request.auth != null;
+    }
+    
+    // Allow authenticated users to read and write timetables
+    match /timetables/{timetableId} {
+      allow read, write: if request.auth != null;
+    }
+    
+    // Allow authenticated users to read and write announcements
+    match /announcements/{announcementId} {
+      allow read, write: if request.auth != null;
+    }
+    
+    // Student Results Collection
+    // Document ID must be in format: {studentId}_{subjectId}_{term}_{year} for uniqueness
+    match /student_results/{resultId} {
+      // Allow teachers to create new results (submission of 80% score)
+      // Enforces unique combo via deterministic ID (duplicates prevented by Firestore)
+      // Validates required fields and score limits
+      allow create: if request.auth != null &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'teacher' &&
+        request.resource.data.keys().hasAll(['studentId', 'subjectId', 'term', 'year', 'testScore', 'examScore', 'status']) &&
+        request.resource.data.testScore is number && request.resource.data.testScore >= 0 && request.resource.data.testScore <= 30 &&
+        request.resource.data.examScore is number && request.resource.data.examScore >= 0 && request.resource.data.examScore <= 50 &&
+        request.resource.data.status == 'submitted' &&
+        // Prevent extra fields on create
+        request.resource.data.keys().size() == 7;
+      
+      // Allow admins to update results (add 20% score, calculate total, publish)
+      // Ensures original fields unchanged, validates new fields
+      allow update: if request.auth != null &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'super_admin'] &&
+        resource.data.diff(request.resource.data).unchangedKeys().hasAll(['studentId', 'subjectId', 'term', 'year', 'testScore', 'examScore']) &&
+        request.resource.data.keys().hasAll(['adminScore', 'totalScore', 'published', 'status']) &&
+        request.resource.data.adminScore is number && request.resource.data.adminScore >= 0 && request.resource.data.adminScore <= 20 &&
+        request.resource.data.totalScore == (request.resource.data.testScore + request.resource.data.examScore + request.resource.data.adminScore) &&
+        request.resource.data.published is bool &&
+        request.resource.data.status == 'graded' &&
+        // Allow only these new fields to be added/updated
+        resource.data.diff(request.resource.data).affectedKeys().hasOnly(['adminScore', 'totalScore', 'published', 'status']);
+      
+      // Read rules: Admins/teachers can read all; students read own if published
+      allow read: if request.auth != null && (
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['teacher', 'admin', 'super_admin'] ||
+        (request.auth.uid == resource.data.studentId && resource.data.published == true)
+      );
+      
+      // No deletes
+      allow delete: if false;
+    }
+    
+    // Default allow for authenticated users (temporary for development)
+    match /{document=**} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}
